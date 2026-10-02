@@ -1,6 +1,16 @@
 import m, { type Component } from 'mithril';
 import katex from 'katex';
 import { compareVersion, ProofStore, RULES } from './store';
+import type {
+  GoalBothModifiedConflict,
+  MergeConflict,
+  MergePreview,
+  RefAddedToDeletedConflict,
+  StepBothModifiedConflict,
+  StepDeleteModifiedConflict,
+  SymbolBothModifiedConflict,
+  SymbolDeleteModifiedConflict,
+} from './merge';
 import type { ProofDocument, ProofStep } from './types';
 
 const store = new ProofStore();
@@ -139,6 +149,206 @@ export class ProofApp implements Component {
     window.removeEventListener('keydown', this.onKeyDown);
   }
 
+  private exportBranch(): void {
+    const result = store.exportBranch();
+    if (!result) return;
+    download(result.fileName, result.content, 'application/json;charset=utf-8');
+    store.notify('已留下基线快照，分支包已下载');
+  }
+
+  private importBranchClick(): void {
+    const input = document.querySelector<HTMLInputElement>('#branch-import-input');
+    if (!input) return;
+    input.value = '';
+    input.click();
+  }
+
+  private importBranchFile(event: Event): void {
+    const input = event.target as HTMLInputElement;
+    const file = input.files?.[0];
+    if (!file) return;
+    const reader = new FileReader();
+    reader.onload = () => {
+      const result = store.importBranch(String(reader.result ?? ''));
+      store.notify(result.message);
+      m.redraw();
+    };
+    reader.onerror = () => store.notify('读取文件失败');
+    reader.readAsText(file);
+  }
+
+  private resolve(conflictId: string, decision: 'local' | 'incoming' | 'restore' | 'delete' | 'drop'): void {
+    store.resolveMergeConflict(conflictId, decision);
+    m.redraw();
+  }
+
+  private confirmMerge(): void {
+    const result = store.confirmMerge();
+    store.notify(result.message);
+    m.redraw();
+  }
+
+  private conflictCard(conflict: MergeConflict): m.Children {
+    const resolveButtons = (options: Array<{ value: 'local' | 'incoming' | 'restore' | 'delete' | 'drop'; label: string; cls: string }>) =>
+      m('div.conflict-actions', options.map((option) => m('button.button.is-small', {
+        class: `${option.cls} ${conflict.decided === option.value ? 'is-active-choice' : ''}`,
+        onclick: () => this.resolve(conflict.id, option.value),
+      }, option.label)));
+
+    if (conflict.kind === 'step-both-modified') {
+      const c = conflict as StepBothModifiedConflict;
+      return m('article.conflict-card', [
+        m('div.conflict-title', [m('span.tag.is-warning', '双方修改'), m('strong', `步骤内容冲突 · ${c.label}`)]),
+        m('p.conflict-desc', `双方都修改了：${c.fields.map((field) => ({ type: '类型', statement: '命题', rule: '推理规则', note: '旁注', counterexample: '反例', alternative: '替代分支' })[field]).join('、')}`),
+        m('div.conflict-sides', [
+          m('div.conflict-side', [m('small', '本地稿'), renderRichText(c.local.statement)]),
+          m('div.conflict-side', [m('small', '导入包'), renderRichText(c.incoming.statement)]),
+        ]),
+        resolveButtons([
+          { value: 'local', label: '保留本地', cls: 'is-info is-light' },
+          { value: 'incoming', label: '采用导入', cls: 'is-success is-light' },
+        ]),
+      ]);
+    }
+
+    if (conflict.kind === 'step-delete-modified') {
+      const c = conflict as StepDeleteModifiedConflict;
+      const deletedSide = c.deletedBy === 'local' ? '本地稿' : '导入包';
+      const editedSide = c.deletedBy === 'local' ? '导入包' : '本地稿';
+      return m('article.conflict-card', [
+        m('div.conflict-title', [m('span.tag.is-danger', '删除 / 修改'), m('strong', `步骤去留冲突 · ${c.label}`)]),
+        m('p.conflict-desc', `${deletedSide}删除了该步骤，但${editedSide}在删除后又修改了它。`),
+        m('div.conflict-sides', [m('div.conflict-side', [m('small', `${editedSide}保留的内容`), renderRichText(c.kept.statement)])]),
+        resolveButtons([
+          { value: 'restore', label: '恢复步骤', cls: 'is-success is-light' },
+          { value: 'delete', label: '确认删除', cls: 'is-danger is-light' },
+        ]),
+      ]);
+    }
+
+    if (conflict.kind === 'ref-added-to-deleted') {
+      const c = conflict as RefAddedToDeletedConflict;
+      const deletedSide = c.deletedBy === 'local' ? '本地稿' : '导入包';
+      const addedSide = c.addedBy === 'local' ? '本地稿' : '导入包';
+      return m('article.conflict-card', [
+        m('div.conflict-title', [m('span.tag.is-danger', '依据断裂风险'), m('strong', '撤去步骤撞上新增引用')]),
+        m('p.conflict-desc', [
+          `${deletedSide}撤去了 `,
+          m('strong', c.targetLabel),
+          `，但${addedSide}让 `,
+          m('strong', c.ownerLabel),
+          ' 新增引用了它。不处理会让正式证明出现断掉的依据。',
+        ]),
+        resolveButtons([
+          { value: 'restore', label: '恢复被删步骤并接上依据', cls: 'is-success is-light' },
+          { value: 'drop', label: '保留删除，摘除这条引用', cls: 'is-danger is-light' },
+        ]),
+      ]);
+    }
+
+    if (conflict.kind === 'symbol-both-modified') {
+      const c = conflict as SymbolBothModifiedConflict;
+      return m('article.conflict-card', [
+        m('div.conflict-title', [m('span.tag.is-warning', '符号双方修改'), m('strong', `符号 $${c.key}$ 的含义不一致`)]),
+        m('div.conflict-sides', [
+          m('div.conflict-side', [m('small', '本地稿'), c.local]),
+          m('div.conflict-side', [m('small', '导入包'), c.incoming]),
+        ]),
+        resolveButtons([
+          { value: 'local', label: '保留本地', cls: 'is-info is-light' },
+          { value: 'incoming', label: '采用导入', cls: 'is-success is-light' },
+        ]),
+      ]);
+    }
+
+    if (conflict.kind === 'symbol-delete-modified') {
+      const c = conflict as SymbolDeleteModifiedConflict;
+      return m('article.conflict-card', [
+        m('div.conflict-title', [m('span.tag.is-danger', '符号删除 / 修改'), m('strong', `符号 $${c.key}$`)]),
+        m('p.conflict-desc', `${c.deletedBy === 'local' ? '本地稿' : '导入包'}删除了该符号，另一侧把含义改为“${c.modifiedValue}”。`),
+        resolveButtons([
+          { value: 'restore', label: '恢复符号', cls: 'is-success is-light' },
+          { value: 'delete', label: '确认删除', cls: 'is-danger is-light' },
+        ]),
+      ]);
+    }
+
+    const c = conflict as GoalBothModifiedConflict;
+    return m('article.conflict-card', [
+      m('div.conflict-title', [m('span.tag.is-warning', '目标双方修改'), m('strong', '证明目标不一致')]),
+      m('div.conflict-sides', [
+        m('div.conflict-side', [m('small', '本地稿'), renderRichText(`$${c.local}$`)]),
+        m('div.conflict-side', [m('small', '导入包'), renderRichText(`$${c.incoming}$`)]),
+      ]),
+      resolveButtons([
+        { value: 'local', label: '保留本地', cls: 'is-info is-light' },
+        { value: 'incoming', label: '采用导入', cls: 'is-success is-light' },
+      ]),
+    ]);
+  }
+
+  private mergeOverlay(preview: MergePreview): m.Children {
+    const pending = store.mergePending;
+    const changeLabel: Record<string, string> = {
+      'step-added': '步骤新增',
+      'step-removed': '步骤撤去',
+      'step-field-changed': '步骤修改',
+      'ref-added': '新增引用',
+      'ref-removed': '摘除引用',
+      'symbol-added': '符号新增',
+      'symbol-removed': '符号撤去',
+      'symbol-changed': '符号修改',
+      'goal-changed': '目标修改',
+    };
+    return m('div.diff-overlay', { onclick: () => { store.cancelMerge(); m.redraw(); } }, [
+      m('section.merge-dialog', { onclick: (event: Event) => event.stopPropagation() }, [
+        m('header.diff-head', [
+          m('div', [
+            m('span.eyebrow', 'BRANCH MERGE'),
+            m('h2', '离线分支合并'),
+            m('small.merge-sub', preview.fallbackBase
+              ? '旧稿中没有这份快照：已把已有步骤与符号当作共同内容，仅接收另一侧的新增与改动。'
+              : `共同基线：${preview.snapshot.name}（${new Date(preview.snapshot.createdAt).toLocaleString('zh-CN')}）`),
+          ]),
+          m('button.delete', { onclick: () => { store.cancelMerge(); m.redraw(); } }, '×'),
+        ]),
+        m('div.diff-summary', [
+          m('span.tag.is-success', `自动接收 ${preview.changes.length} 项`),
+          m('span.tag.is-warning', `待处理 ${pending.length} 项`),
+          m('span.tag.is-light', `合并后 ${preview.merged.steps.length} 步`),
+        ]),
+        m('div.merge-body', [
+          preview.conflicts.length > 0 && m('section.merge-section', [
+            m('h3.merge-section-title', `待处理冲突（${pending.length} 项未定）`),
+            m('div.merge-conflicts', preview.conflicts.map((conflict) => this.conflictCard(conflict))),
+          ]),
+          m('section.merge-section', [
+            m('h3.merge-section-title', '只改一处，自动接收'),
+            preview.changes.length === 0
+              ? m('p.empty-copy', '没有单方改动。')
+              : m('div.change-list', preview.changes.map((change) => m('div.change-item', [
+                  m('span.tag', { class: change.side === 'local' ? 'is-info is-light' : 'is-success is-light' }, change.side === 'local' ? '本地' : '导入'),
+                  m('strong', changeLabel[change.kind] ?? change.kind),
+                  m('span.change-detail', `${change.label}${change.detail ? ` · ${change.detail}` : ''}`),
+                ]))),
+          ]),
+        ]),
+        m('footer.merge-foot', [
+          m('p.merge-hint', pending.length > 0
+            ? `还有 ${pending.length} 项冲突需要选择，正式证明不会写入断掉的依据。`
+            : '冲突已全部处理，合并将原子写入步骤、引用与基线快照。'),
+          m('div', [
+            m('button.button', { onclick: () => { store.cancelMerge(); m.redraw(); } }, '取消'),
+            m('button.button.is-primary', {
+              disabled: pending.length > 0,
+              onclick: () => this.confirmMerge(),
+            }, '确认合并写入'),
+          ]),
+        ]),
+      ]),
+    ]);
+  }
+
   view(): m.Children {
     const document = store.current;
     const selected = store.selectedStep;
@@ -191,6 +401,14 @@ export class ProofApp implements Component {
             ]))),
             m('button.button.is-fullwidth.is-small', { onclick: () => { store.createVersion(); m.redraw(); } }, '＋ 保存当前版本'),
           ]),
+          m('section.panel.version-panel', [
+            m('div.panel-heading', [m('span', '合并基线快照'), m('span.count-badge', document.branchSnapshots.length)]),
+            document.branchSnapshots.length === 0 && m('p.empty-copy', '导出分支包时会在此留下共同基线，供离线批改后三方合并。'),
+            m('div.version-list', document.branchSnapshots.map((snapshot) => m('div.version-item', { class: 'is-baseline' }, [
+              m('span', [m('strong', snapshot.name), m('br'), m('small', `${snapshot.steps.length} 步 · ${snapshot.exportedFrom === document.id ? '本文档导出' : '外部带回'}`)]),
+              m('small', new Date(snapshot.createdAt).toLocaleString('zh-CN', { month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit' })),
+            ]))),
+          ]),
           m('section.check-summary', [
             m('div.check-summary-head', [
               m('div', [m('span.eyebrow', 'LIVE CHECK'), m('h2', '证明检查')]),
@@ -209,6 +427,14 @@ export class ProofApp implements Component {
               m('div.editor-meta', [`${document.author} · ${document.steps.length} 个步骤`, m('span.keyboard-hint', '拖动 ⠿ 排序')]),
             ]),
             m('div.export-actions', [
+              m('button.button.is-small.is-info.is-light', { onclick: () => this.exportBranch(), title: '留下当前版本快照并下载离线批改包' }, '⇪ 导出分支包'),
+              m('button.button.is-small.is-success.is-light', { onclick: () => this.importBranchClick(), title: '选择他人批改的分支包进行离线合并' }, '⇩ 导入合并'),
+              m('input[type=file]', {
+                id: 'branch-import-input',
+                accept: '.json,application/json',
+                style: { display: 'none' },
+                onchange: (event: Event) => this.importBranchFile(event),
+              }),
               m('button.button.is-small', { onclick: () => download(`${document.title}.md`, exportMarkdown(document), 'text/markdown;charset=utf-8') }, '导出 Markdown'),
               m('button.button.is-small', { onclick: () => download(`${document.title}.tex`, exportLatex(document), 'application/x-tex;charset=utf-8') }, '导出 LaTeX'),
             ]),
@@ -354,8 +580,7 @@ export class ProofApp implements Component {
           ]),
         ]),
       ]),
-      selectedVersion && m('div.diff-overlay', { onclick: () => { store.compareVersionId = ''; m.redraw(); } }, [
-        m('section.diff-dialog', { onclick: (event: Event) => event.stopPropagation() }, [
+      selectedVersion && m('div.diff-overlay', { onclick: () => { store.compareVersionId = ''; m.redraw(); } }, [        m('section.diff-dialog', { onclick: (event: Event) => event.stopPropagation() }, [
           m('header.diff-head', [
             m('div', [m('span.eyebrow', 'VERSION DIFF'), m('h2', `${selectedVersion.name} ↔ 当前版本`)]),
             m('button.delete', { onclick: () => { store.compareVersionId = ''; m.redraw(); } }),
@@ -376,6 +601,7 @@ export class ProofApp implements Component {
           ]),
         ]),
       ]),
+      store.mergePreview && this.mergeOverlay(store.mergePreview),
       store.toast && m('div.toast-notification', store.toast),
     ]);
   }

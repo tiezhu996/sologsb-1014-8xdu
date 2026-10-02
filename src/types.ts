@@ -20,6 +20,30 @@ export interface ProofVersion {
   goal: string;
 }
 
+export interface BranchSnapshot {
+  id: string;
+  name: string;
+  createdAt: string;
+  exportedFrom: string;
+  goal: string;
+  symbols: Record<string, string>;
+  steps: ProofStep[];
+}
+
+export const BRANCH_PACKAGE_FORMAT = 'gzhi-branch-package/v1';
+
+export interface BranchPackage {
+  format: typeof BRANCH_PACKAGE_FORMAT;
+  documentId: string;
+  documentTitle: string;
+  source: string;
+  exportedAt: string;
+  snapshot: BranchSnapshot;
+  goal: string;
+  symbols: Record<string, string>;
+  steps: ProofStep[];
+}
+
 export interface ProofDocument {
   id: string;
   title: string;
@@ -28,6 +52,7 @@ export interface ProofDocument {
   symbols: Record<string, string>;
   steps: ProofStep[];
   versions: ProofVersion[];
+  branchSnapshots: BranchSnapshot[];
   updatedAt: string;
 }
 

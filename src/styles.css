@@ -199,6 +199,34 @@ kbd { padding: 2px 5px; border: 1px solid #c8d1da; border-bottom-width: 2px; bor
 .diff-row.is-changed span:nth-child(2) { background: #fff8e8; }
 .diff-row.is-changed span:nth-child(3) { background: #eef8f3; }
 .diff-label { color: #657385; background: #fafbfc; }
+
+/* 分支合并 */
+.version-item.is-baseline { display: block; cursor: default; }
+.version-item.is-baseline:hover { background: #f2f7f2; color: var(--ink); }
+.version-item.is-baseline small { color: var(--muted); display: block; margin-top: 2px; }
+.merge-dialog { width: min(960px, 95vw); max-height: 88vh; display: flex; flex-direction: column; overflow: hidden; border-radius: 16px; background: #fff; box-shadow: 0 24px 80px rgba(10,25,40,.28); }
+.merge-sub { display: block; margin-top: 4px; color: var(--muted); font-size: 11px; }
+.merge-body { overflow-y: auto; padding: 14px 20px; display: grid; gap: 18px; }
+.merge-section-title { margin: 0 0 9px; font-size: 13px; font-weight: 700; color: #46536a; }
+.merge-conflicts { display: grid; gap: 10px; }
+.conflict-card { padding: 12px 14px; border: 1px solid #f0d9b8; border-left: 4px solid #d99a3a; border-radius: 11px; background: #fffcf5; display: grid; gap: 9px; }
+.conflict-title { display: flex; align-items: center; gap: 8px; font-size: 13px; }
+.conflict-desc { margin: 0; color: #6d6049; font-size: 12px; line-height: 1.6; }
+.conflict-sides { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
+.conflict-side { padding: 8px 10px; border: 1px solid #ece3d2; border-radius: 8px; background: #fff; min-width: 0; }
+.conflict-side small { display: block; color: var(--muted); font-size: 10px; margin-bottom: 4px; }
+.conflict-side > :not(small) { font: 14px/1.5 "Times New Roman", "Noto Serif SC", serif; overflow-x: auto; }
+.conflict-actions { display: flex; flex-wrap: wrap; gap: 7px; }
+.conflict-actions .button { height: 30px; font-size: 12px; }
+.conflict-actions .is-active-choice { outline: 2px solid rgba(40,110,168,.35); border-color: #286ea8; }
+.change-list { display: grid; gap: 5px; max-height: 240px; overflow-y: auto; }
+.change-item { display: grid; grid-template-columns: 48px 74px 1fr; align-items: center; gap: 8px; padding: 7px 9px; border-radius: 8px; background: #f7f9fb; font-size: 12px; }
+.change-item strong { color: #3d516b; font-weight: 650; }
+.change-detail { color: var(--muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.merge-foot { padding: 13px 20px; display: flex; justify-content: space-between; align-items: center; gap: 12px; border-top: 1px solid var(--line); background: #fafbfc; }
+.merge-hint { margin: 0; color: var(--muted); font-size: 11px; }
+.merge-foot > div { display: flex; gap: 8px; }
+
 .toast-notification { position: fixed; right: 24px; bottom: 24px; z-index: 80; padding: 11px 16px; border-radius: 9px; color: #fff; background: #173f60; box-shadow: 0 10px 30px rgba(17,47,70,.25); font-size: 12px; }
 
 @media (max-width: 1220px) {

@@ -1,5 +1,14 @@
 import { redraw } from 'mithril';
-import type { ProofCheck, ProofDocument, ProofStep, ProofVersion } from './types';
+import type { BranchPackage, ProofCheck, ProofDocument, ProofStep, ProofVersion } from './types';
+import {
+  buildMerged,
+  createBranchPackage,
+  isBranchPackage,
+  pendingConflicts,
+  planMerge,
+  type MergeConflict,
+  type MergePreview,
+} from './merge';
 
 const STORAGE_KEY = 'sologsb-1014-proof-workspace-v1';
 const uid = (prefix: string) => `${prefix}-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 7)}`;
@@ -37,6 +46,7 @@ function initialDocuments(): ProofDocument[] {
       symbols: { a: '实数', b: '实数', P: '关于正整数的命题', n: '正整数', k: '正整数' },
       steps: sampleSteps(),
       versions: [],
+      branchSnapshots: [],
       updatedAt: now,
     },
     {
@@ -47,6 +57,7 @@ function initialDocuments(): ProofDocument[] {
       symbols: { P: '关于正整数的命题', n: '正整数', k: '正整数' },
       steps: issueSteps(),
       versions: [],
+      branchSnapshots: [],
       updatedAt: now,
     },
   ];
@@ -57,7 +68,12 @@ function loadDocuments(): ProofDocument[] {
     const raw = localStorage.getItem(STORAGE_KEY);
     if (!raw) return initialDocuments();
     const parsed = JSON.parse(raw) as ProofDocument[];
-    return Array.isArray(parsed) && parsed.length ? parsed : initialDocuments();
+    if (!Array.isArray(parsed) || !parsed.length) return initialDocuments();
+    // 旧版数据迁移：补充分支快照字段
+    parsed.forEach((document) => {
+      if (!Array.isArray(document.branchSnapshots)) document.branchSnapshots = [];
+    });
+    return parsed;
   } catch {
     return initialDocuments();
   }
@@ -145,6 +161,7 @@ export class ProofStore {
       symbols: { A: '待定义对象', B: '待定义对象' },
       steps: [{ id: uid('step'), type: 'premise', statement: '在这里输入前提', rule: '前提', references: [], note: '', counterexample: '', alternative: '' }],
       versions: [],
+      branchSnapshots: [],
       updatedAt: new Date().toISOString(),
     };
     this.undoStack.push(clone(this.documents));
@@ -225,6 +242,134 @@ export class ProofStore {
       this.compareVersionId = version.id;
     });
     this.notify('已保存当前证明快照');
+  }
+
+  /* ---------------- 分支离线合并 ---------------- */
+
+  mergePreview: MergePreview | null = null;
+  mergeTargetId = '';
+
+  /** 导出分支包：先把当时的版本快照写入文档，再下载离线包 */
+  exportBranch(): { fileName: string; content: string } | null {
+    const { pkg, snapshot } = createBranchPackage(this.current, this.current.author || '匿名批改');
+    // 导出留下快照属于簿记动作，不产生撤销检查点；按快照 ID 去重，重试导出不产生副本
+    if (!this.current.branchSnapshots.some((item) => item.id === snapshot.id)) {
+      this.current.branchSnapshots.unshift(snapshot);
+    }
+    this.save();
+    const fileName = `${this.current.title || 'proof'}-branch-${new Date().toISOString().slice(0, 10)}.gzhi.json`;
+    return { fileName, content: JSON.stringify(pkg, null, 2) };
+  }
+
+  /** 解析导入包并生成合并预览；找不到共同快照时用旧稿现有内容合成基线 */
+  importBranch(raw: string): { ok: boolean; message: string } {
+    let parsed: unknown;
+    try {
+      parsed = JSON.parse(raw);
+    } catch {
+      return { ok: false, message: '导入失败：文件不是有效的 JSON' };
+    }
+    if (!isBranchPackage(parsed)) {
+      return { ok: false, message: '导入失败：不是格致分支批改包' };
+    }
+    const pkg = parsed as BranchPackage;
+    const target = this.documents.find((item) => item.id === pkg.documentId) ?? this.current;
+    this.mergeTargetId = target.id;
+    this.activeId = target.id;
+    this.compareVersionId = '';
+    this.selectedStepId = target.steps[0]?.id ?? '';
+    this.importedPackage = pkg;
+    this.mergePreview = planMerge(target, pkg);
+    return {
+      ok: true,
+      message: this.mergePreview.fallbackBase
+        ? '旧稿没有共同快照，已把现有步骤与符号作为共同内容'
+        : '已按导出快照生成合并预览',
+    };
+  }
+
+  resolveMergeConflict(conflictId: string, decision: 'local' | 'incoming' | 'restore' | 'delete' | 'drop'): void {
+    if (!this.mergePreview) return;
+    const conflict = this.mergePreview.conflicts.find((item) => item.id === conflictId);
+    if (!conflict) return;
+    if (conflict.kind === 'ref-added-to-deleted' && (decision === 'restore' || decision === 'drop')) {
+      conflict.decided = decision;
+    } else if (conflict.kind === 'step-delete-modified' && (decision === 'restore' || decision === 'delete')) {
+      conflict.decided = decision;
+    } else if (conflict.kind === 'symbol-delete-modified' && (decision === 'restore' || decision === 'delete')) {
+      conflict.decided = decision;
+    } else if ((conflict.kind === 'step-both-modified' || conflict.kind === 'symbol-both-modified' || conflict.kind === 'goal-both-modified')
+      && (decision === 'local' || decision === 'incoming')) {
+      conflict.decided = decision;
+    } else {
+      return;
+    }
+    const target = this.documents.find((item) => item.id === this.mergeTargetId);
+    if (target && this.mergePreview && this.importedPackage) {
+      this.mergePreview.merged = buildMerged(this.mergePreview, target, this.importedPackage);
+    }
+  }
+
+  private importedPackage: BranchPackage | null = null;
+
+  get mergePending(): MergeConflict[] {
+    return this.mergePreview ? pendingConflicts(this.mergePreview) : [];
+  }
+
+  cancelMerge(): void {
+    this.mergePreview = null;
+    this.importedPackage = null;
+    this.mergeTargetId = '';
+  }
+
+  /**
+   * 确认合并：步骤、引用和旧快照一次性原子写入。
+   * 全部成功后才落地 localStorage，中途失败保持原样；快照按 ID 去重，重试不多出副本。
+   */
+  confirmMerge(): { ok: boolean; message: string } {
+    const preview = this.mergePreview;
+    const target = this.documents.find((item) => item.id === this.mergeTargetId);
+    const pkg = this.importedPackage;
+    if (!preview || !target || !pkg) return { ok: false, message: '没有待确认的合并' };
+    const pending = pendingConflicts(preview);
+    if (pending.length) return { ok: false, message: `还有 ${pending.length} 项待处理冲突` };
+
+    const { merged } = preview;
+    // 写入前最后校验：正式证明不允许断链依据
+    const ids = new Set(merged.steps.map((step) => step.id));
+    if (merged.steps.some((step) => step.references.some((ref) => !ids.has(ref)))) {
+      return { ok: false, message: '合并结果存在失效引用，已阻止写入' };
+    }
+
+    const backup = clone(this.documents);
+    try {
+      const next = clone(this.documents);
+      const doc = next.find((item) => item.id === target.id);
+      if (!doc) throw new Error('target document missing');
+      doc.steps = clone(merged.steps);
+      doc.symbols = clone(merged.symbols);
+      doc.goal = merged.goal;
+      doc.updatedAt = new Date().toISOString();
+      // 导出时留下的基线快照一并写入；按 ID 去重，重复确认/重试不产生副本
+      if (!doc.branchSnapshots.some((item) => item.id === pkg.snapshot.id)) {
+        doc.branchSnapshots.unshift(clone(pkg.snapshot));
+      }
+      localStorage.setItem(STORAGE_KEY, JSON.stringify(next));
+      // 持久化成功后再切换内存状态（单一提交点）；合并前状态作为一个撤销检查点
+      this.undoStack.push(backup);
+      if (this.undoStack.length > 80) this.undoStack.shift();
+      this.redoStack = [];
+      this.documents = next;
+      this.activeId = doc.id;
+      this.selectedStepId = doc.steps[0]?.id ?? '';
+      this.mergePreview = null;
+      this.importedPackage = null;
+      this.mergeTargetId = '';
+      return { ok: true, message: '合并完成：步骤、引用与快照已一并写入' };
+    } catch (error) {
+      this.documents = backup;
+      return { ok: false, message: `合并写入失败，文档未改动：${error instanceof Error ? error.message : '未知错误'}` };
+    }
   }
 
   notify(message: string): void {
