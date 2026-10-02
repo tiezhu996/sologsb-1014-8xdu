@@ -1,7 +1,7 @@
 import m, { type Component } from 'mithril';
 import katex from 'katex';
 import { compareVersion, ProofStore, RULES } from './store';
-import type { ProofDocument, ProofStep } from './types';
+import type { MergeResolution, ProofDocument, ProofStep } from './types';
 
 const store = new ProofStore();
 
@@ -45,12 +45,41 @@ function shortId(id: string): string {
   return id.replace(/^step-/, '').slice(-4).toUpperCase();
 }
 
+const stepStatusMeta: Record<string, { label: string; tone: string }> = {
+  unchanged: { label: '一致', tone: 'same' },
+  'local-only': { label: '本地新增', tone: 'local' },
+  'incoming-only': { label: '导入新增', tone: 'incoming' },
+  'changed-local': { label: '本地修改 · 自动接收', tone: 'local' },
+  'changed-incoming': { label: '导入修改 · 自动接收', tone: 'incoming' },
+  'changed-both': { label: '两侧都改 · 待裁决', tone: 'conflict' },
+  'deleted-local': { label: '本地删除', tone: 'deleted' },
+  'deleted-incoming': { label: '导入删除', tone: 'deleted' },
+  'changed-local-deleted-incoming': { label: '本地改 / 导入删 · 待裁决', tone: 'conflict' },
+  'deleted-local-changed-incoming': { label: '本地删 / 导入改 · 待裁决', tone: 'conflict' },
+};
+
 function download(name: string, content: string, mime: string): void {
   const link = document.createElement('a');
   link.href = URL.createObjectURL(new Blob([content], { type: mime }));
   link.download = name;
   link.click();
   URL.revokeObjectURL(link.href);
+}
+
+const safeFileName = (name: string) => name.replace(/[\\/:*?"<>|]/g, '_') || 'proof';
+
+function handleImportFile(file: File): void {
+  const reader = new FileReader();
+  reader.onload = () => {
+    try {
+      store.importBundle(JSON.parse(String(reader.result)), file.name);
+    } catch {
+      store.notify('导入失败：文件不是有效的交换包');
+    }
+    m.redraw();
+  };
+  reader.onerror = () => store.notify('读取文件失败');
+  reader.readAsText(file);
 }
 
 function exportMarkdown(document: ProofDocument): string {
@@ -135,6 +164,156 @@ export class ProofApp implements Component {
     window.addEventListener('keydown', this.onKeyDown);
   }
 
+  private renderMergeDialog(): m.Children {
+    const session = store.mergeSession;
+    if (!session) return null;
+    const pending = store.mergePending;
+    const incoming = session.incoming;
+    const docMismatch = incoming.docId !== store.current.id;
+
+    const countBy = (statuses: string[]) =>
+      session.stepRows.filter((row) => statuses.includes(row.status)).length;
+    const autoAccepted = countBy(['changed-local', 'changed-incoming', 'local-only', 'incoming-only', 'deleted-local', 'deleted-incoming']);
+    const conflicts = countBy(['changed-both', 'changed-local-deleted-incoming', 'deleted-local-changed-incoming']);
+
+    const pick = (id: string, options: [MergeResolution, string][]) =>
+      m('div.resolution', options.map(([value, label]) =>
+        m('button.button.is-small', {
+          class: store.mergeResolutions.get(id) === value ? 'is-link is-selected' : '',
+          onclick: () => { store.setMergeResolution(id, value); m.redraw(); },
+        }, label)));
+
+    const renderStepValue = (step: ProofStep | undefined): m.Children =>
+      step ? [m('strong', step.statement), m('small', `规则：${step.rule}${step.note ? ` · 旁注：${step.note}` : ''}`)] : m('em.deleted-copy', '（已删除）');
+
+    return m('div.diff-overlay', { onclick: () => { store.cancelMerge(); m.redraw(); } }, [
+      m('section.diff-dialog.merge-dialog', { onclick: (event: Event) => event.stopPropagation() }, [
+        m('header.diff-head', [
+          m('div', [
+            m('span.eyebrow', 'BRANCH MERGE'),
+            m('h2', `合并分支包 · ${store.mergeFileName}`),
+            m('p.merge-sub', [
+              session.legacy
+                ? m('span.tag.is-warning.merge-flag', '旧稿无快照：共同内容已作为基线')
+                : m('span.tag.is-info.merge-flag', `基线快照 ${session.baselineId?.slice(-6) ?? ''}`),
+              docMismatch && m('span.tag.is-warning.merge-flag', '文档来源不同，仍按稳定编号合并'),
+            ]),
+          ]),
+          m('button.delete', { onclick: () => { store.cancelMerge(); m.redraw(); } }),
+        ]),
+        m('div.diff-summary.merge-summary', [
+          m('span.tag.is-success', `自动接收 ${autoAccepted}`),
+          m('span.tag.is-danger', `待裁决 ${pending.length}`),
+          m('span.tag.is-light', `一致 ${countBy(['unchanged'])}`),
+          m('span.tag.is-warning', `同改冲突 ${conflicts}`),
+        ]),
+        m('div.merge-body', [
+          m('div.merge-section', [
+            m('h3', '步骤合并'),
+            m('div.merge-table.merge-step-table', [
+              m('div.merge-row.merge-header', [m('span', '编号'), m('span', '状态'), m('span', '本地'), m('span', '导入分支'), m('span', '裁决')]),
+              ...session.stepOrder.map((key) => {
+                const row = session.stepRows.find((item) => item.key === key)!;
+                const meta = stepStatusMeta[row.status];
+                const resolutionId = row.status === 'changed-both'
+                  ? `step:${key}`
+                  : (row.status === 'changed-local-deleted-incoming' || row.status === 'deleted-local-changed-incoming')
+                    ? `moddelete-step:${key}`
+                    : '';
+                const resolved = resolutionId ? store.mergeResolutions.get(resolutionId) : undefined;
+                return m('div.merge-row', { class: `tone-${meta.tone}${resolved ? ' is-resolved' : ''}` }, [
+                  m('span.merge-key', key),
+                  m('span.merge-status', m('span.tag', { class: `is-${meta.tone === 'same' ? 'light' : meta.tone === 'deleted' ? 'danger' : meta.tone === 'conflict' ? 'warning' : meta.tone === 'local' ? 'info' : 'success'}` }, meta.label)),
+                  m('span.merge-cell', renderStepValue(row.local)),
+                  m('span.merge-cell', renderStepValue(row.incoming)),
+                  m('span.merge-cell', resolutionId
+                    ? row.status === 'changed-both'
+                      ? pick(resolutionId, [['keep-local', '采用本地'], ['keep-incoming', '采用导入']])
+                      : pick(resolutionId, [['keep', '保留改动'], ['delete', '接受删除']])
+                    : m('span.auto-copy', '—')),
+                ]);
+              }),
+            ]),
+          ]),
+          this.renderSymbolMerge(pick),
+          this.renderGoalMerge(pick),
+          ...pending
+            .filter((item) => item.kind === 'dangling' || item.kind === 'cycle')
+            .map((item) => m('div.merge-section', [
+              m('h3', item.kind === 'dangling' ? `断链依据 · 引用 ${item.referrerKeys?.join('、')} → ${item.targetKey}` : '循环引用'),
+              m('p.merge-detail', item.localSummary),
+              m('p.merge-detail', item.incomingSummary),
+              m('div.resolution', item.kind === 'dangling'
+                ? pick(item.id, [['keep', '恢复被删步骤，保留依据'], ['delete', '删去这条引用']])
+                : pick(item.id, [['break-local', '断开本地新增引用'], ['break-incoming', '断开导入新增引用']])),
+            ])),
+          m('div.merge-legend', '说明：只改一处的编辑已自动接收；两侧同改或“删除 × 新增依据”必须先裁决。确认后步骤、引用与历史快照一次写入，未裁决前不会改动当前稿。'),
+        ]),
+        m('footer.merge-foot', [
+          m('div', pending.length
+            ? m('span.tag.is-danger', `仍有 ${pending.length} 项待处理`)
+            : m('span.tag.is-success', '全部可自动合并')),
+          m('div.merge-foot-actions', [
+            m('button.button', { onclick: () => { store.cancelMerge(); m.redraw(); } }, '取消'),
+            m('button.button.is-primary', {
+              disabled: pending.length > 0,
+              onclick: () => { store.confirmMerge(); m.redraw(); },
+            }, '确认合并并写入'),
+          ]),
+        ]),
+      ]),
+    ]);
+  }
+
+  private renderSymbolMerge(pick: (id: string, options: [MergeResolution, string][]) => m.Children): m.Children {
+    const session = store.mergeSession!;
+    const rows = session.symbolOrder
+      .map((key) => ({ key, status: session.symbolStatus.get(key)! }))
+      .filter((row) => row.status !== 'unchanged' && row.status !== 'deleted-local' && row.status !== 'deleted-incoming');
+    if (!rows.length) return null;
+    const localSymbols = store.current.symbols;
+    return m('div.merge-section', [
+      m('h3', '符号表合并'),
+      m('div.merge-table', [
+        m('div.merge-row.merge-header', [m('span', '符号'), m('span', '状态'), m('span', '本地'), m('span', '导入分支'), m('span', '裁决')]),
+        ...rows.map(({ key, status }) => {
+          const local = key in localSymbols ? localSymbols[key] : undefined;
+          const incoming = key in session.incoming.symbols ? session.incoming.symbols[key] : undefined;
+          const resolutionId = status === 'changed-both' ? `symbol:${key}` : `moddelete-symbol:${key}`;
+          const resolved = store.mergeResolutions.get(resolutionId);
+          const options: [MergeResolution, string][] = status === 'changed-both'
+            ? [['keep-local', '采用本地'], ['keep-incoming', '采用导入']]
+            : [['keep', '保留'], ['delete', '删除']];
+          return m('div.merge-row', { class: resolved ? 'is-resolved' : '' }, [
+            m('span.merge-key', m('code', key)),
+            m('span.merge-status', status === 'changed-both' || status.includes('deleted') ? '待裁决' : '自动接收'),
+            m('span.merge-cell', local ?? m('em.deleted-copy', '（已删除）')),
+            m('span.merge-cell', incoming ?? m('em.deleted-copy', '（已删除）')),
+            m('span.merge-cell', status === 'changed-both' || status.includes('deleted') ? pick(resolutionId, options) : m('span.auto-copy', '—')),
+          ]);
+        }),
+      ]),
+    ]);
+  }
+
+  private renderGoalMerge(pick: (id: string, options: [MergeResolution, string][]) => m.Children): m.Children {
+    const session = store.mergeSession!;
+    if (session.goalStatus === 'unchanged') return null;
+    const auto = session.goalStatus === 'changed-local' || session.goalStatus === 'changed-incoming';
+    return m('div.merge-section', [
+      m('h3', '证明目标'),
+      m('div.merge-table', [
+        m('div.merge-row.merge-header', [m('span', '状态'), m('span', '本地'), m('span', '导入分支'), m('span', '裁决')]),
+        m('div.merge-row', [
+          m('span.merge-status', auto ? '自动接收' : '两侧都改 · 待裁决'),
+          m('span.merge-cell', store.current.goal),
+          m('span.merge-cell', session.incoming.goal),
+          m('span.merge-cell', auto ? m('span.auto-copy', '—') : pick('goal', [['keep-local', '采用本地'], ['keep-incoming', '采用导入']])),
+        ]),
+      ]),
+    ]);
+  }
+
   onremove(): void {
     window.removeEventListener('keydown', this.onKeyDown);
   }
@@ -209,6 +388,28 @@ export class ProofApp implements Component {
               m('div.editor-meta', [`${document.author} · ${document.steps.length} 个步骤`, m('span.keyboard-hint', '拖动 ⠿ 排序')]),
             ]),
             m('div.export-actions', [
+              m('button.button.is-small.is-primary', {
+                onclick: () => {
+                  const bundle = store.exportBundle();
+                  download(`${safeFileName(document.title)}-branch.json`, JSON.stringify(bundle, null, 2), 'application/json;charset=utf-8');
+                  m.redraw();
+                },
+                title: '固化基线快照并导出离线合并包',
+              }, '⇪ 导出分支包'),
+              m('button.button.is-small.is-primary.is-outlined', {
+                onclick: () => (globalThis.document.getElementById('merge-file-input') as HTMLInputElement | null)?.click(),
+                title: '导入其他电脑的分支包',
+              }, '⇩ 导入并合并'),
+              m('input#merge-file-input[type=file][accept=.json,application/json]', {
+                style: { display: 'none' },
+                onchange: (event: Event) => {
+                  const input = event.target as HTMLInputElement;
+                  const file = input.files?.[0];
+                  if (file) handleImportFile(file);
+                  input.value = '';
+                },
+              }),
+              m('span.export-divider'),
               m('button.button.is-small', { onclick: () => download(`${document.title}.md`, exportMarkdown(document), 'text/markdown;charset=utf-8') }, '导出 Markdown'),
               m('button.button.is-small', { onclick: () => download(`${document.title}.tex`, exportLatex(document), 'application/x-tex;charset=utf-8') }, '导出 LaTeX'),
             ]),
@@ -250,7 +451,7 @@ export class ProofApp implements Component {
                 m('div.step-head', [
                   m('span.tag', { class: step.type === 'goal' ? 'is-success' : step.type === 'premise' ? 'is-info' : 'is-light' }, typeLabel[step.type]),
                   m('span.rule-chip', step.rule),
-                  m('span.step-id', `#${shortId(step.id)}`),
+                  m('span.step-id', `${step.key} · #${shortId(step.id)}`),
                   stepChecks.length > 0 && m('span.issue-badge', `${stepChecks.length} 项检查`),
                   m('button.step-menu', { onclick: (event: Event) => { event.stopPropagation(); store.removeStep(step.id); m.redraw(); }, title: '删除步骤' }, '×'),
                 ]),
@@ -376,6 +577,7 @@ export class ProofApp implements Component {
           ]),
         ]),
       ]),
+      this.renderMergeDialog(),
       store.toast && m('div.toast-notification', store.toast),
     ]);
   }

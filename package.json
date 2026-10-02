@@ -6,7 +6,10 @@
   "scripts": {
     "dev": "vite --host 0.0.0.0",
     "build": "tsc --noEmit && vite build",
-    "preview": "vite preview --host 0.0.0.0"
+    "preview": "vite preview --host 0.0.0.0",
+    "test:merge": "esbuild scripts/merge-test.ts --bundle --platform=node --format=cjs --outfile=scripts/.merge-test.cjs && node scripts/.merge-test.cjs",
+    "test:store": "esbuild scripts/store-test.ts --bundle --platform=node --format=cjs --outfile=scripts/.store-test.cjs && node scripts/.store-test.cjs",
+    "test": "npm run test:merge && npm run test:store"
   },
   "dependencies": {
     "bulma": "^1.0.4",
@@ -17,6 +20,7 @@
     "@types/katex": "^0.16.7",
     "@types/mithril": "^2.2.7",
     "typescript": "^5.7.3",
-    "vite": "^6.1.0"
+    "vite": "^6.1.0",
+    "esbuild": "^0.25.0"
   }
 }

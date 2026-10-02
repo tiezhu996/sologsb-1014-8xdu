@@ -201,6 +201,46 @@ kbd { padding: 2px 5px; border: 1px solid #c8d1da; border-bottom-width: 2px; bor
 .diff-label { color: #657385; background: #fafbfc; }
 .toast-notification { position: fixed; right: 24px; bottom: 24px; z-index: 80; padding: 11px 16px; border-radius: 9px; color: #fff; background: #173f60; box-shadow: 0 10px 30px rgba(17,47,70,.25); font-size: 12px; }
 
+/* 离线分支合并 */
+.export-actions .export-divider { width: 1px; align-self: stretch; background: #dfe4ea; margin: 2px 4px; }
+.merge-dialog { width: min(1180px, 96vw); }
+.merge-sub { margin: 6px 0 0; display: flex; gap: 6px; align-items: center; }
+.merge-flag { font-size: 10px; }
+.merge-summary { gap: 8px; }
+.merge-body { flex: 1; overflow: auto; padding: 14px 20px; display: flex; flex-direction: column; gap: 18px; }
+.merge-section h3 { margin: 0 0 8px; font-size: 13px; color: #243348; }
+.merge-table { border: 1px solid #e6eaef; border-radius: 10px; overflow: hidden; }
+.merge-row { display: grid; grid-template-columns: 64px 150px 1fr 1fr 230px; border-bottom: 1px solid #edf0f3; min-height: 52px; }
+.merge-step-table .merge-row { grid-template-columns: 64px 170px 1fr 1fr 230px; }
+.merge-row:last-child { border-bottom: none; }
+.merge-row > span { padding: 9px 11px; min-width: 0; border-left: 1px solid #eef1f4; font-size: 12px; display: flex; flex-direction: column; gap: 3px; justify-content: center; }
+.merge-row > span:first-child { border-left: none; }
+.merge-header { color: #667386; background: #f5f7fa !important; font-size: 10px; font-weight: 700; flex-direction: row !important; align-items: center; }
+.merge-key { font-weight: 700; color: #31435a; }
+.merge-cell strong { font-weight: 600; color: #1d2b3d; overflow-wrap: anywhere; }
+.merge-cell small { color: #76839a; overflow-wrap: anywhere; }
+.deleted-copy { color: #b04a55; font-style: normal; }
+.merge-row.tone-local .merge-key { box-shadow: inset 3px 0 0 #4a90d9; }
+.merge-row.tone-incoming .merge-key { box-shadow: inset 3px 0 0 #3bb78f; }
+.merge-row.tone-conflict { background: #fffaf0; }
+.merge-row.tone-conflict .merge-key { box-shadow: inset 3px 0 0 #e0a83e; }
+.merge-row.tone-deleted { opacity: .7; }
+.merge-row.is-resolved { background: #f3faf6; }
+.resolution { display: flex; flex-wrap: wrap; gap: 5px; }
+.resolution .button { padding: 3px 8px; font-size: 11px; height: auto; }
+.resolution .button.is-selected { outline: 2px solid rgba(59, 183, 143, .35); }
+.auto-copy { color: #98a2b1; font-size: 11px; }
+.merge-detail { margin: 3px 0; font-size: 12px; color: #46536a; overflow-wrap: anywhere; }
+.merge-legend { font-size: 11px; color: #7a8699; background: #f5f7fa; border-radius: 9px; padding: 9px 12px; }
+.merge-foot { padding: 12px 20px; border-top: 1px solid var(--line); display: flex; justify-content: space-between; align-items: center; gap: 10px; }
+.merge-foot-actions { display: flex; gap: 8px; }
+.merge-foot .button[disabled] { opacity: .55; }
+.step-id { font-family: Consolas, monospace; }
+@media (max-width: 820px) {
+  .merge-row, .merge-step-table .merge-row { grid-template-columns: 52px 1fr; }
+  .merge-row > span:nth-child(n+3) { border-left: none; }
+}
+
 @media (max-width: 1220px) {
   .workspace { grid-template-columns: 210px minmax(470px, 1fr); }
   .right-rail { grid-column: 1 / -1; position: static; grid-template-columns: repeat(3, 1fr); }
